@@ -103,11 +103,19 @@ private:
 class TranspoMonteCarlo
 {
 public:
-	double n = 0.0;
-	array<double, MAX_LEGAL_MOVE> nplayouts = {};
-	array<double, MAX_LEGAL_MOVE> nwins = {};
-	unordered_map<size_t, double> nplayouts_AMAF = {};
-	unordered_map<size_t, double> nwins_AMAF = {};
+	double n;
+	array<double, MAX_LEGAL_MOVE> nplayouts;
+	array<double, MAX_LEGAL_MOVE> nwins;
+	unordered_map<size_t, double> nplayouts_AMAF;
+	unordered_map<size_t, double> nwins_AMAF;
+	/*TranspoMonteCarlo() {
+		n = 0.0;
+		nplayouts = {};
+		nwins = {};
+		nplayouts_AMAF = {};
+		nwins_AMAF = {};
+	}
+	TranspoMonteCarlo(TranspoMonteCarlo& other): n(other.n), nplayouts(other.nplayouts), nwins(other.nwins), nplayouts_AMAF(other.nplayouts_AMAF), nwins_AMAF(other.nwins_AMAF) {}*/
 private:
 
 };
@@ -762,17 +770,13 @@ Move bestMoveUCT(const CheckerBoard& state, size_t n_playouts, double C = 1.42) 
 }
 
 
-double GRAVE(CheckerBoard& state, vector<size_t>& played, TableMonteCarlo& table, TranspoMonteCarlo& tref, default_random_engine& generator, size_t ref = 10, double b = 1e-5) {
+double GRAVE(CheckerBoard& state, vector<size_t>& played, TableMonteCarlo& table, TranspoMonteCarlo& tref, default_random_engine& generator, double C = 0.4, size_t ref = 0, double b = 100.) {
 	if (state.terminal()) {
 		return state.score();
 	}
 	if (table.look(state)) {
 		auto& t = table.get(state);
-		TranspoMonteCarlo tr;
-		if (t.n > ref)
-			tr = t;
-		else
-			tr = tref;
+		
 			
 		double bestValue = 0;
 		auto moves = state.legal_moves();
@@ -786,18 +790,31 @@ double GRAVE(CheckerBoard& state, vector<size_t>& played, TableMonteCarlo& table
 			auto n = t.n;
 			auto ni = t.nplayouts[i];
 			auto wi = t.nwins[i];
-			if (tr.nplayouts_AMAF.find(code) == tr.nplayouts_AMAF.end()) {
-				tr.nplayouts_AMAF[code] = 0.0;
-				tr.nwins_AMAF[code] = 0.0;
+			double niAMAF; 
+			double wiAMAF;
+			if (t.n > ref) {
+				if (t.nplayouts_AMAF.find(code) == t.nplayouts_AMAF.end()) {
+					t.nplayouts_AMAF[code] = 0.0;
+					t.nwins_AMAF[code] = 0.0;
+				}
+				niAMAF = t.nplayouts_AMAF[code];
+				wiAMAF = t.nwins_AMAF[code];
 			}
-			auto niAMAF = tr.nplayouts_AMAF[code];
-			auto wiAMAF = tr.nwins_AMAF[code];
+			else {
+				if (tref.nplayouts_AMAF.find(code) == tref.nplayouts_AMAF.end()) {
+					tref.nplayouts_AMAF[code] = 0.0;
+					tref.nwins_AMAF[code] = 0.0;
+				}
+				niAMAF = tref.nplayouts_AMAF[code];
+				wiAMAF = tref.nwins_AMAF[code];
+			}
+			
 
 			double beta = 0.0;
 			double Q_tilde = 1000000;
 			if (niAMAF > 0) {
 				beta = niAMAF / (ni + niAMAF + b * ni * niAMAF);
-				double Q_tilde = wiAMAF / niAMAF;
+				Q_tilde = wiAMAF / niAMAF;
 				if (!state.white_turn)
 					Q_tilde = 1 - Q_tilde;
 			}
@@ -807,7 +824,10 @@ double GRAVE(CheckerBoard& state, vector<size_t>& played, TableMonteCarlo& table
 				Q = wi / ni;
 				if (!state.white_turn)
 					Q = 1 - Q;
-				Q = Q + 0.4 * sqrt(log(n) / ni);
+				Q = Q + C * sqrt(log(n) / ni);
+			}
+			else {
+				beta = 0.0;
 			}
 
 			val = (1.0 - beta) * Q + beta * Q_tilde;
@@ -819,7 +839,13 @@ double GRAVE(CheckerBoard& state, vector<size_t>& played, TableMonteCarlo& table
 		}
 		state.play(moves[bestMove]);
 		played.push_back(bestCode);
-		auto res = GRAVE(state,played, table,tr, generator);
+		double res;
+		if (t.n > ref) {
+			res = GRAVE(state, played, table, t, generator, C);
+		}
+		else {
+			res = GRAVE(state, played, table, tref, generator, C);
+		}
 		t.n++;
 		t.nplayouts[bestMove] += 1.0;
 		t.nwins[bestMove] += res;
@@ -832,7 +858,7 @@ double GRAVE(CheckerBoard& state, vector<size_t>& played, TableMonteCarlo& table
 	}
 }
 
-Move bestMoveGRAVE(const CheckerBoard& state, size_t n_playouts) {
+Move bestMoveGRAVE(const CheckerBoard& state, size_t n_playouts, double C = 0.4) {
 
 	default_random_engine generator(rd());
 	TableMonteCarlo table{};
@@ -842,7 +868,7 @@ Move bestMoveGRAVE(const CheckerBoard& state, size_t n_playouts) {
 	{
 		CheckerBoard copy_state = state;
 		vector<size_t> played{};
-		double res = GRAVE(copy_state, played, table, tref, generator);
+		double res = GRAVE(copy_state, played, table, tref, generator, C);
 	}
 	auto& t = table.get(state);
 	auto moves = state.legal_moves();
@@ -963,7 +989,51 @@ int main()
 		std::cout << ms_int.count() << "ms\n";
 	}
 
+	int white_win = 0;
 
+	array<int, MAX_THREADS> white_wins{};
+	array<int, MAX_THREADS> black_wins{};
+	array<int, MAX_THREADS> stalemates{};
+
+	#pragma omp parallel for num_threads(MAX_THREADS) schedule(dynamic)
+	for (int i = 0; i < 100; i++)
+	{
+
+		int tid = omp_get_thread_num();
+		CheckerBoard copy_state{};
+		while (!copy_state.terminal()) {
+			if (copy_state.white_turn) {
+				Move move = bestMoveUCT(copy_state, 128, 0.4);
+				copy_state.play(move);
+			}
+			else {
+				Move move = flat(copy_state, 128);
+				copy_state.play(move);
+			}
+		}
+		double sp = copy_state.score();
+		if (sp == 1.0) {
+			white_wins[tid] += 1;
+		}
+		else if (sp == 0.0) {
+			black_wins[tid] += 1;
+		}
+		else {
+			stalemates[tid] += 1;
+		}
+	}
+
+	int w = 0;
+	int b = 0;
+	int stale = 0;
+	for (size_t i = 0; i < MAX_THREADS; i++)
+	{
+		w += white_wins[i];
+		b += black_wins[i];
+		stale += stalemates[i];
+		//std::cout << ms_ints[i].count() << "ms\n";
+	}
+	cout << " White: " << w << " Black: " << b << " Stalemate: " << stale << '\n';
 	//auto full_t1 = high_resolution_clock::now();
 
 	//ofstream outfile;
