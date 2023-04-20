@@ -1,0 +1,1 @@
+1 1.42 White: 32 Black: 26 Stalemate: 42

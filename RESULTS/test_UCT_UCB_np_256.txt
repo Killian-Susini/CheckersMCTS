@@ -1,0 +1,1 @@
+256 White: 49 Black: 19 Stalemate: 32

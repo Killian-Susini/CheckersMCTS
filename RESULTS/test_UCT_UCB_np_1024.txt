@@ -1,0 +1,1 @@
+1024 White: 76 Black: 5 Stalemate: 19

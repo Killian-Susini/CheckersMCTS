@@ -1,0 +1,1 @@
+512 White: 12 Black: 71 Stalemate: 17
