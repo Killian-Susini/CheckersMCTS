@@ -645,10 +645,15 @@ public:
 
 	void updateAMAF(TranspoMonteCarlo& t,const vector<size_t>& played, double res) {
 		size_t len_played = played.size();
+		bitset<MAX_CODE_MOVE> already_seen{};
 		for (size_t i = 0; i < len_played; i++)
 		{
+			if (already_seen[played[i]])
+				continue;
+			else
+				already_seen[played[i]] = true;
 			if (t.nplayouts_AMAF.find(played[i]) != t.nplayouts_AMAF.end()) {
-				t.nplayouts_AMAF[played[i]]++;
+				t.nplayouts_AMAF[played[i]] += 1.0;
 				t.nwins_AMAF[played[i]] += res;
 			}
 			else {
@@ -788,21 +793,24 @@ double GRAVE(CheckerBoard& state, vector<size_t>& played, TableMonteCarlo& table
 			auto niAMAF = tr.nplayouts_AMAF[code];
 			auto wiAMAF = tr.nwins_AMAF[code];
 
+			double beta = 0.0;
+			double Q_tilde = 1000000;
 			if (niAMAF > 0) {
-				double beta = niAMAF / (ni + niAMAF + b * ni * niAMAF);
-				//double beta = 0.0;
-				double Q = DBL_MAX;
-				if (ni > 0) {
-					Q = wi / ni;
-					if (!state.white_turn)
-						Q = 1 - Q;
-					Q = Q + 1.42 * sqrt(log(n) / ni);
-				}
+				beta = niAMAF / (ni + niAMAF + b * ni * niAMAF);
 				double Q_tilde = wiAMAF / niAMAF;
 				if (!state.white_turn)
 					Q_tilde = 1 - Q_tilde;
-				val = (1.0 - beta) * Q + beta * Q_tilde;
 			}
+
+			double Q = 1000000;
+			if (ni > 0) {
+				Q = wi / ni;
+				if (!state.white_turn)
+					Q = 1 - Q;
+				Q = Q + 0.4 * sqrt(log(n) / ni);
+			}
+
+			val = (1.0 - beta) * Q + beta * Q_tilde;
 			if (val > bestValue) {
 				bestValue = val;
 				bestMove = i;
@@ -928,134 +936,140 @@ int main()
 
 	auto ms_int = duration_cast<milliseconds>(t2 - t1);
 	std::cout << ms_int.count() << "ms\n";
-
-	CheckerBoard copy_state = state;
-	t1 = high_resolution_clock::now();
-	auto selected_move = flat(state, 500);
-	t2 = high_resolution_clock::now();
-	ms_int = duration_cast<milliseconds>(t2 - t1);
-	std::cout << ms_int.count() << "ms\n";
-
-	copy_state = state;
-	t1 = high_resolution_clock::now();
-	selected_move = bestMoveUCT(state, 500); //pretty sure it raised a bug, party length?
-	t2 = high_resolution_clock::now();
-	ms_int = duration_cast<milliseconds>(t2 - t1);
-	std::cout << ms_int.count() << "ms\n";
-
-	copy_state = state;
-	t1 = high_resolution_clock::now();
-	selected_move = bestMoveGRAVE(state, 500);
-	t2 = high_resolution_clock::now();
-	ms_int = duration_cast<milliseconds>(t2 - t1);
-	std::cout << ms_int.count() << "ms\n";
-
-	auto full_t1 = high_resolution_clock::now();
-
-	ofstream outfile;
-	//double C1 = 1.42, C2 = 0.4;
-	const array<double, 8> C = { 0.0,0.2, 0.4,0.6,0.8,1.0,1.42,10.0 };
-	for (auto C1: C)
 	{
-		for (auto C2 : C)
-		{
-			if (C1 >= C2) continue;
-
-
-
-			int white_win = 0;
-
-			array<int, MAX_THREADS> white_wins{};
-			array<int, MAX_THREADS> black_wins{};
-			array<int, MAX_THREADS> stalemates{};
-
-			outfile.open(format("test_{}_{}.txt",C1,C2));
-			if (!outfile.is_open()) {
-				perror("Error open");
-				exit(EXIT_FAILURE);
-			}
-
-
-			#pragma omp parallel for num_threads(MAX_THREADS) schedule(dynamic)
-			for (int i = 0; i < 100; i++)
-			{
-
-				int tid = omp_get_thread_num();
-
-				CheckerBoard copy_state{};
-				/*cout << copy_state.print_board();
-				{
-					auto moves = copy_state.legal_moves();
-					for (auto& move : moves)
-					{
-						auto to_print = format("({},{})->({},{})", move.x1, move.y1, move.x2, move.y2);
-						cout << to_print;
-						for (auto eat : move.piecesToRemove)
-							cout << eat.first << " " << eat.second;
-
-					}
-				}*/
-
-				while (!copy_state.terminal()) {
-					if (copy_state.white_turn) {
-						Move move = bestMoveUCT(copy_state, 512, C1);
-						copy_state.play(move);
-					}
-					else {
-						Move move = bestMoveUCT(copy_state, 512, C2);
-						copy_state.play(move);
-					}
-					/*cout << copy_state.print_board();
-					auto moves = copy_state.legal_moves();
-					for (auto& move : moves)
-					{
-						auto to_print = format("({},{})->({},{})", move.x1, move.y1, move.x2, move.y2);
-						cout << to_print;
-						for (auto eat : move.piecesToRemove)
-							cout << eat.first << " " << eat.second;
-
-					}
-					cout << '\n';*/
-				}
-				//cout << copy_state.print_board();
-				//auto moves = copy_state.legal_moves();
-				/*for (auto& move : moves)
-				{
-					auto to_print = format("({},{})->({},{})", move.x1, move.y1, move.x2, move.y2);
-					cout << to_print;
-					for (auto eat : move.piecesToRemove)
-						cout << eat.first << " " << eat.second;
-
-				}
-				cout << '\n';*/
-				double sp = copy_state.score();
-				if (sp == 1.0) {
-					white_wins[tid] += 1;
-				}
-				else if (sp == 0.0) {
-					black_wins[tid] += 1;
-				}
-				else {
-					stalemates[tid] += 1;
-				}
-			}
-			int w = 0;
-			int b = 0;
-			int stale = 0;
-			for (size_t i = 0; i < MAX_THREADS; i++)
-			{
-				w += white_wins[i];
-				b += black_wins[i];
-				stale += stalemates[i];
-				//std::cout << ms_ints[i].count() << "ms\n";
-			}
-			outfile << C1 << " " << C2 << " White: " << w << " Black: " << b << " Stalemate: " << stale << '\n';
-			auto full_t2 = high_resolution_clock::now();
-			std::cout << duration_cast<milliseconds>(full_t2 - full_t1) << "ms\n";
-
-			outfile.close();
-		}
-
+		CheckerBoard copy_state{};
+		t1 = high_resolution_clock::now();
+		auto selected_move = flat(state, 500);
+		t2 = high_resolution_clock::now();
+		ms_int = duration_cast<milliseconds>(t2 - t1);
+		std::cout << ms_int.count() << "ms\n";
 	}
+
+	{
+		CheckerBoard copy_state{};
+		t1 = high_resolution_clock::now();
+		auto selected_move = bestMoveUCT(state, 500);
+		t2 = high_resolution_clock::now();
+		ms_int = duration_cast<milliseconds>(t2 - t1);
+		std::cout << ms_int.count() << "ms\n";
+	}
+
+	{
+		CheckerBoard copy_state{};
+		t1 = high_resolution_clock::now();
+		auto selected_move = bestMoveGRAVE(state, 500);
+		t2 = high_resolution_clock::now();
+		ms_int = duration_cast<milliseconds>(t2 - t1);
+		std::cout << ms_int.count() << "ms\n";
+	}
+
+
+	//auto full_t1 = high_resolution_clock::now();
+
+	//ofstream outfile;
+	////double C1 = 1.42, C2 = 0.4;
+	//const array<double, 8> C = { 0.0,0.2, 0.4,0.6,0.8,1.0,1.42,10.0 };
+	//for (auto C1: C)
+	//{
+	//	for (auto C2 : C)
+	//	{
+	//		if (C1 >= C2) continue;
+
+
+
+	//		int white_win = 0;
+
+	//		array<int, MAX_THREADS> white_wins{};
+	//		array<int, MAX_THREADS> black_wins{};
+	//		array<int, MAX_THREADS> stalemates{};
+
+	//		outfile.open(format("test_{}_{}.txt",C1,C2));
+	//		if (!outfile.is_open()) {
+	//			perror("Error open");
+	//			exit(EXIT_FAILURE);
+	//		}
+
+
+	//		#pragma omp parallel for num_threads(MAX_THREADS) schedule(dynamic)
+	//		for (int i = 0; i < 100; i++)
+	//		{
+
+	//			int tid = omp_get_thread_num();
+
+	//			CheckerBoard copy_state{};
+	//			/*cout << copy_state.print_board();
+	//			{
+	//				auto moves = copy_state.legal_moves();
+	//				for (auto& move : moves)
+	//				{
+	//					auto to_print = format("({},{})->({},{})", move.x1, move.y1, move.x2, move.y2);
+	//					cout << to_print;
+	//					for (auto eat : move.piecesToRemove)
+	//						cout << eat.first << " " << eat.second;
+
+	//				}
+	//			}*/
+
+	//			while (!copy_state.terminal()) {
+	//				if (copy_state.white_turn) {
+	//					Move move = bestMoveUCT(copy_state, 512, C1);
+	//					copy_state.play(move);
+	//				}
+	//				else {
+	//					Move move = bestMoveUCT(copy_state, 512, C2);
+	//					copy_state.play(move);
+	//				}
+	//				/*cout << copy_state.print_board();
+	//				auto moves = copy_state.legal_moves();
+	//				for (auto& move : moves)
+	//				{
+	//					auto to_print = format("({},{})->({},{})", move.x1, move.y1, move.x2, move.y2);
+	//					cout << to_print;
+	//					for (auto eat : move.piecesToRemove)
+	//						cout << eat.first << " " << eat.second;
+
+	//				}
+	//				cout << '\n';*/
+	//			}
+	//			//cout << copy_state.print_board();
+	//			//auto moves = copy_state.legal_moves();
+	//			/*for (auto& move : moves)
+	//			{
+	//				auto to_print = format("({},{})->({},{})", move.x1, move.y1, move.x2, move.y2);
+	//				cout << to_print;
+	//				for (auto eat : move.piecesToRemove)
+	//					cout << eat.first << " " << eat.second;
+
+	//			}
+	//			cout << '\n';*/
+	//			double sp = copy_state.score();
+	//			if (sp == 1.0) {
+	//				white_wins[tid] += 1;
+	//			}
+	//			else if (sp == 0.0) {
+	//				black_wins[tid] += 1;
+	//			}
+	//			else {
+	//				stalemates[tid] += 1;
+	//			}
+	//		}
+	//		int w = 0;
+	//		int b = 0;
+	//		int stale = 0;
+	//		for (size_t i = 0; i < MAX_THREADS; i++)
+	//		{
+	//			w += white_wins[i];
+	//			b += black_wins[i];
+	//			stale += stalemates[i];
+	//			//std::cout << ms_ints[i].count() << "ms\n";
+	//		}
+	//		outfile << C1 << " " << C2 << " White: " << w << " Black: " << b << " Stalemate: " << stale << '\n';
+	//		auto full_t2 = high_resolution_clock::now();
+	//		std::cout << duration_cast<milliseconds>(full_t2 - full_t1) << "ms\n";
+
+	//		outfile.close();
+	//	}
+
+	//}
 
 }
