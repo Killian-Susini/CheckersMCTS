@@ -20,7 +20,7 @@
 using namespace std;
 
 const size_t MAX_LEGAL_MOVE = 32;
-const size_t MAX_CODE_MOVE = 8*4*8*4*4; // does not count if we eat many people
+const size_t MAX_CODE_MOVE = 4*8*8*8*8; // does not count if we eat many people
 
 enum class SquareType
 {
@@ -81,16 +81,16 @@ public:
 		switch (color)
 		{
 		case BLACK_MAN:
-			return x1 + 4 * (y1 >> 1) + 8 * 4 * x2 + 4 * 8 * 4 * (y2 >> 1);
+			return x1 + 8 * y1 + 8 * 8 * x2 + 8 * 8 * 8 * y2;
 			break;
 		case WHITE_MAN:
-			return x1 + 4 * (y1 >> 1) + 8 * 4 * x2 + 4 * 8 * 4 * (y2 >> 1) + (8 * 4 * 8 * 4);
+			return x1 + 8 * y1 + 8 * 8 * x2 + 8 * 8 * 8 * y2 + (8 * 8 * 8 * 8);
 			break;
 		case BLACK_KING:
-			return x1 + 4 * (y1 >> 1) + 8 * 4 * x2 + 4 * 8 * 4 * (y2 >> 1) + 2*(8 * 4 * 8 * 4);
+			return x1 + 8 * y1 + 8 * 8 * x2 + 8 * 8 * 8 * y2 + 2*(8 * 8 * 8 * 8);
 			break;
 		case WHITE_KING:
-			return x1 + 4 * (y1 >> 1) + 8 * 4 * x2 + 4 * 8 * 4 * (y2 >> 1) + 3*(8 * 4 * 8 * 4);
+			return x1 + 8 * y1 + 8 * 8 * x2 + 8 * 8 * 8 * y2 + 3*(8 * 8 * 8 * 8);
 			break;
 		default:
 			break;
@@ -651,7 +651,7 @@ public:
 		exist[board.h] = true;
 	}
 
-	void updateAMAF(TranspoMonteCarlo& t,const vector<size_t>& played, double res) {
+	void updateAMAF(TranspoMonteCarlo& t,const vector<size_t>& played,const double res) {
 		size_t len_played = played.size();
 		bitset<MAX_CODE_MOVE> already_seen{};
 		for (size_t i = 0; i < len_played; i++)
@@ -698,9 +698,57 @@ Move flat(const CheckerBoard& state, size_t n_playouts) {
 	//cout << "done\n";
 	return moves[bestMove];
 }
+
+
+Move UCB(const CheckerBoard& state, size_t n_playouts) {
+	default_random_engine generator(rd());
+	const auto moves = state.legal_moves();
+	auto lenMove = moves.size();
+	array<double, MAX_LEGAL_MOVE> scores;
+	array<double, MAX_LEGAL_MOVE> nbVisits;
+
+	for (size_t i = 0; i < n_playouts; i++) {
+		double bestScore = 0.0;
+		size_t bestMove = 0;
+		for (size_t m = 0; m < lenMove; m++)
+		{
+			double score = 100000;
+			if (nbVisits[m] > 0) {
+				score = scores[m] / nbVisits[m] + 0.4 * sqrt(log(i) / nbVisits[m]);
+			}
+
+			if (score > bestScore) {
+				bestScore = score;
+				bestMove = m;
+			}
+		}
+		CheckerBoard copy_state = state;
+		copy_state.play(moves[bestMove]);
+		double res = copy_state.playout(generator);
+		if (!state.white_turn)
+			res = 1 - res;
+		scores[bestMove] += res;
+		nbVisits[bestMove] += 1;
+	}
+	size_t selected_move = 0;
+	double bestNbVisit = 0;
+	for (size_t m = 0; m < lenMove; m++)
+	{
+		if (nbVisits[m] > bestNbVisit) {
+			bestNbVisit = nbVisits[m];
+			selected_move = m;
+		}
+	}
+
+	return moves[selected_move];
+}
+
+
+
+
 	
 
-double UCT(CheckerBoard& state, TableMonteCarlo& table, default_random_engine& generator, double C=1.42) {
+double UCT(CheckerBoard& state, TableMonteCarlo& table, default_random_engine& generator, double C) {
 	if (state.terminal()) {
 		return state.score();
 	}
@@ -741,7 +789,7 @@ double UCT(CheckerBoard& state, TableMonteCarlo& table, default_random_engine& g
 	}
 }
 
-Move bestMoveUCT(const CheckerBoard& state, size_t n_playouts, double C = 1.42) {
+Move bestMoveUCT(const CheckerBoard& state, size_t n_playouts, double C) {
 
 	default_random_engine generator(rd());
 	TableMonteCarlo table{};
@@ -770,16 +818,17 @@ Move bestMoveUCT(const CheckerBoard& state, size_t n_playouts, double C = 1.42) 
 }
 
 
-double GRAVE(CheckerBoard& state, vector<size_t>& played, TableMonteCarlo& table, TranspoMonteCarlo& tref, default_random_engine& generator, double C = 0.4, size_t ref = 0, double b = 100.) {
+double GRAVE(CheckerBoard& state, vector<size_t>& played, TableMonteCarlo& table, TranspoMonteCarlo tref, default_random_engine& generator, size_t ref = 0, double b = 20) { //  double C,
 	if (state.terminal()) {
 		return state.score();
 	}
+
+	auto moves = state.legal_moves();
 	if (table.look(state)) {
 		auto& t = table.get(state);
 		
 			
 		double bestValue = 0;
-		auto moves = state.legal_moves();
 		size_t bestMove = 0;
 		size_t bestCode = moves[0].code();
 		size_t num_moves = moves.size();
@@ -813,7 +862,8 @@ double GRAVE(CheckerBoard& state, vector<size_t>& played, TableMonteCarlo& table
 			double beta = 0.0;
 			double Q_tilde = 1000000;
 			if (niAMAF > 0) {
-				beta = niAMAF / (ni + niAMAF + b * ni * niAMAF);
+				//beta = niAMAF / (ni + niAMAF + b * ni * niAMAF);
+				beta = sqrt(b / (3 * n + b));
 				Q_tilde = wiAMAF / niAMAF;
 				if (!state.white_turn)
 					Q_tilde = 1 - Q_tilde;
@@ -824,10 +874,7 @@ double GRAVE(CheckerBoard& state, vector<size_t>& played, TableMonteCarlo& table
 				Q = wi / ni;
 				if (!state.white_turn)
 					Q = 1 - Q;
-				Q = Q + C * sqrt(log(n) / ni);
-			}
-			else {
-				beta = 0.0;
+				//Q = Q + C * sqrt(log(n) / ni);
 			}
 
 			val = (1.0 - beta) * Q + beta * Q_tilde;
@@ -841,10 +888,10 @@ double GRAVE(CheckerBoard& state, vector<size_t>& played, TableMonteCarlo& table
 		played.push_back(bestCode);
 		double res;
 		if (t.n > ref) {
-			res = GRAVE(state, played, table, t, generator, C);
+			res = GRAVE(state, played, table, t, generator);//, C);
 		}
 		else {
-			res = GRAVE(state, played, table, tref, generator, C);
+			res = GRAVE(state, played, table, tref, generator);//, C);
 		}
 		t.n++;
 		t.nplayouts[bestMove] += 1.0;
@@ -854,11 +901,24 @@ double GRAVE(CheckerBoard& state, vector<size_t>& played, TableMonteCarlo& table
 	}
 	else {
 		table.add(state);
-		return state.playoutAMAF(played, generator);
+		TranspoMonteCarlo& t = table.get(state);
+		size_t len_played = played.size();
+		auto res = state.playoutAMAF(played, generator);
+		t.n++;
+		for(size_t i = 0; i < played.size();i++)
+		{
+			if (moves[i].code() == played[len_played]) {
+				t.nplayouts[i]++;
+				t.nwins[i] += res;
+				break;
+			}
+		}
+		table.updateAMAF(t, played, res);
+		return res;
 	}
 }
 
-Move bestMoveGRAVE(const CheckerBoard& state, size_t n_playouts, double C = 0.4) {
+Move bestMoveGRAVE(const CheckerBoard& state, size_t n_playouts){//, double C) {
 
 	default_random_engine generator(rd());
 	TableMonteCarlo table{};
@@ -868,7 +928,7 @@ Move bestMoveGRAVE(const CheckerBoard& state, size_t n_playouts, double C = 0.4)
 	{
 		CheckerBoard copy_state = state;
 		vector<size_t> played{};
-		double res = GRAVE(copy_state, played, table, tref, generator, C);
+		double res = GRAVE(copy_state, played, table, tref, generator);//, C);
 	}
 	auto& t = table.get(state);
 	auto moves = state.legal_moves();
@@ -951,7 +1011,7 @@ int main()
 	using std::chrono::milliseconds;
 	using std::chrono::microseconds;
 	CheckerBoard state{};
-	
+	/*
 	auto t1 = high_resolution_clock::now();
 	for (size_t i = 0; i < 500; i++)
 	{
@@ -974,7 +1034,7 @@ int main()
 	{
 		CheckerBoard copy_state{};
 		t1 = high_resolution_clock::now();
-		auto selected_move = bestMoveUCT(state, 500);
+		auto selected_move = bestMoveUCT(state, 500, 1.42);
 		t2 = high_resolution_clock::now();
 		ms_int = duration_cast<milliseconds>(t2 - t1);
 		std::cout << ms_int.count() << "ms\n";
@@ -983,11 +1043,11 @@ int main()
 	{
 		CheckerBoard copy_state{};
 		t1 = high_resolution_clock::now();
-		auto selected_move = bestMoveGRAVE(state, 500);
+		auto selected_move = bestMoveGRAVE(state, 500,1.42);
 		t2 = high_resolution_clock::now();
 		ms_int = duration_cast<milliseconds>(t2 - t1);
 		std::cout << ms_int.count() << "ms\n";
-	}
+	}*/
 
 	int white_win = 0;
 
@@ -995,33 +1055,34 @@ int main()
 	array<int, MAX_THREADS> black_wins{};
 	array<int, MAX_THREADS> stalemates{};
 
-	#pragma omp parallel for num_threads(MAX_THREADS) schedule(dynamic)
-	for (int i = 0; i < 100; i++)
-	{
+	//#pragma omp parallel for num_threads(MAX_THREADS) schedule(dynamic)
+	//for (int i = 0; i < 100; i++)
+	//{
 
-		int tid = omp_get_thread_num();
-		CheckerBoard copy_state{};
-		while (!copy_state.terminal()) {
-			if (copy_state.white_turn) {
-				Move move = bestMoveUCT(copy_state, 128, 0.4);
-				copy_state.play(move);
-			}
-			else {
-				Move move = flat(copy_state, 128);
-				copy_state.play(move);
-			}
-		}
-		double sp = copy_state.score();
-		if (sp == 1.0) {
-			white_wins[tid] += 1;
-		}
-		else if (sp == 0.0) {
-			black_wins[tid] += 1;
-		}
-		else {
-			stalemates[tid] += 1;
-		}
-	}
+	//	int tid = omp_get_thread_num();
+	//	CheckerBoard copy_state{};
+	//	while (!copy_state.terminal()) {
+	//		//cout << copy_state.print_board();
+	//		if (copy_state.white_turn) {
+	//			Move move = bestMoveUCT(copy_state, 64, 0.4);
+	//			copy_state.play(move);
+	//		}
+	//		else {
+	//			Move move = UCB(copy_state, 64);
+	//			copy_state.play(move);
+	//		}
+	//	}
+	//	double sp = copy_state.score();
+	//	if (sp == 1.0) {
+	//		white_wins[tid] += 1;
+	//	}
+	//	else if (sp == 0.0) {
+	//		black_wins[tid] += 1;
+	//	}
+	//	else {
+	//		stalemates[tid] += 1;
+	//	}
+	//}
 
 	int w = 0;
 	int b = 0;
@@ -1034,112 +1095,107 @@ int main()
 		//std::cout << ms_ints[i].count() << "ms\n";
 	}
 	cout << " White: " << w << " Black: " << b << " Stalemate: " << stale << '\n';
-	//auto full_t1 = high_resolution_clock::now();
+	auto full_t1 = high_resolution_clock::now();
 
-	//ofstream outfile;
-	////double C1 = 1.42, C2 = 0.4;
-	//const array<double, 8> C = { 0.0,0.2, 0.4,0.6,0.8,1.0,1.42,10.0 };
-	//for (auto C1: C)
-	//{
-	//	for (auto C2 : C)
-	//	{
-	//		if (C1 >= C2) continue;
+	ofstream outfile;
+	//double C1 = 1.42, C2 = 0.4;
+	const array<size_t, 2> n_playouts = {  512, 1024 }; // const array<size_t, 4> n_playouts = { 128, 256, 512, 1024 };
+	
+	for (auto np : n_playouts)
+	{
 
+		int white_win = 0;
 
+		array<int, MAX_THREADS> white_wins{};
+		array<int, MAX_THREADS> black_wins{};
+		array<int, MAX_THREADS> stalemates{};
 
-	//		int white_win = 0;
-
-	//		array<int, MAX_THREADS> white_wins{};
-	//		array<int, MAX_THREADS> black_wins{};
-	//		array<int, MAX_THREADS> stalemates{};
-
-	//		outfile.open(format("test_{}_{}.txt",C1,C2));
-	//		if (!outfile.is_open()) {
-	//			perror("Error open");
-	//			exit(EXIT_FAILURE);
-	//		}
+		outfile.open(format("test_UCB_UCT_np_{}.txt",np));
+		if (!outfile.is_open()) {
+			perror("Error open");
+			exit(EXIT_FAILURE);
+		}
 
 
-	//		#pragma omp parallel for num_threads(MAX_THREADS) schedule(dynamic)
-	//		for (int i = 0; i < 100; i++)
-	//		{
+		#pragma omp parallel for num_threads(MAX_THREADS) schedule(dynamic)
+		for (int i = 0; i < 100; i++)
+		{
 
-	//			int tid = omp_get_thread_num();
+			int tid = omp_get_thread_num();
 
-	//			CheckerBoard copy_state{};
-	//			/*cout << copy_state.print_board();
-	//			{
-	//				auto moves = copy_state.legal_moves();
-	//				for (auto& move : moves)
-	//				{
-	//					auto to_print = format("({},{})->({},{})", move.x1, move.y1, move.x2, move.y2);
-	//					cout << to_print;
-	//					for (auto eat : move.piecesToRemove)
-	//						cout << eat.first << " " << eat.second;
+			CheckerBoard copy_state{};
+			/*cout << copy_state.print_board();
+			{
+				auto moves = copy_state.legal_moves();
+				for (auto& move : moves)
+				{
+					auto to_print = format("({},{})->({},{})", move.x1, move.y1, move.x2, move.y2);
+					cout << to_print;
+					for (auto eat : move.piecesToRemove)
+						cout << eat.first << " " << eat.second;
 
-	//				}
-	//			}*/
+				}
+			}*/
 
-	//			while (!copy_state.terminal()) {
-	//				if (copy_state.white_turn) {
-	//					Move move = bestMoveUCT(copy_state, 512, C1);
-	//					copy_state.play(move);
-	//				}
-	//				else {
-	//					Move move = bestMoveUCT(copy_state, 512, C2);
-	//					copy_state.play(move);
-	//				}
-	//				/*cout << copy_state.print_board();
-	//				auto moves = copy_state.legal_moves();
-	//				for (auto& move : moves)
-	//				{
-	//					auto to_print = format("({},{})->({},{})", move.x1, move.y1, move.x2, move.y2);
-	//					cout << to_print;
-	//					for (auto eat : move.piecesToRemove)
-	//						cout << eat.first << " " << eat.second;
+			while (!copy_state.terminal()) {
+				if (copy_state.white_turn) {
+					Move move = UCB(copy_state, np);
+					copy_state.play(move);
+				}
+				else {
+					Move move = bestMoveUCT(copy_state, np, 0.4);
+					copy_state.play(move);
+				}
+				/*cout << copy_state.print_board();
+				auto moves = copy_state.legal_moves();
+				for (auto& move : moves)
+				{
+					auto to_print = format("({},{})->({},{})", move.x1, move.y1, move.x2, move.y2);
+					cout << to_print;
+					for (auto eat : move.piecesToRemove)
+						cout << eat.first << " " << eat.second;
 
-	//				}
-	//				cout << '\n';*/
-	//			}
-	//			//cout << copy_state.print_board();
-	//			//auto moves = copy_state.legal_moves();
-	//			/*for (auto& move : moves)
-	//			{
-	//				auto to_print = format("({},{})->({},{})", move.x1, move.y1, move.x2, move.y2);
-	//				cout << to_print;
-	//				for (auto eat : move.piecesToRemove)
-	//					cout << eat.first << " " << eat.second;
+				}
+				cout << '\n';*/
+			}
+			//cout << copy_state.print_board();
+			//auto moves = copy_state.legal_moves();
+			/*for (auto& move : moves)
+			{
+				auto to_print = format("({},{})->({},{})", move.x1, move.y1, move.x2, move.y2);
+				cout << to_print;
+				for (auto eat : move.piecesToRemove)
+					cout << eat.first << " " << eat.second;
 
-	//			}
-	//			cout << '\n';*/
-	//			double sp = copy_state.score();
-	//			if (sp == 1.0) {
-	//				white_wins[tid] += 1;
-	//			}
-	//			else if (sp == 0.0) {
-	//				black_wins[tid] += 1;
-	//			}
-	//			else {
-	//				stalemates[tid] += 1;
-	//			}
-	//		}
-	//		int w = 0;
-	//		int b = 0;
-	//		int stale = 0;
-	//		for (size_t i = 0; i < MAX_THREADS; i++)
-	//		{
-	//			w += white_wins[i];
-	//			b += black_wins[i];
-	//			stale += stalemates[i];
-	//			//std::cout << ms_ints[i].count() << "ms\n";
-	//		}
-	//		outfile << C1 << " " << C2 << " White: " << w << " Black: " << b << " Stalemate: " << stale << '\n';
-	//		auto full_t2 = high_resolution_clock::now();
-	//		std::cout << duration_cast<milliseconds>(full_t2 - full_t1) << "ms\n";
+			}
+			cout << '\n';*/
+			double sp = copy_state.score();
+			if (sp == 1.0) {
+				white_wins[tid] += 1;
+			}
+			else if (sp == 0.0) {
+				black_wins[tid] += 1;
+			}
+			else {
+				stalemates[tid] += 1;
+			}
+		}
+		int w = 0;
+		int b = 0;
+		int stale = 0;
+		for (size_t i = 0; i < MAX_THREADS; i++)
+		{
+			w += white_wins[i];
+			b += black_wins[i];
+			stale += stalemates[i];
+			//std::cout << ms_ints[i].count() << "ms\n";
+		}
+		outfile << np << " White: " << w << " Black: " << b << " Stalemate: " << stale << '\n';
+		auto full_t2 = high_resolution_clock::now();
+		std::cout << duration_cast<milliseconds>(full_t2 - full_t1) << "ms\n";
 
-	//		outfile.close();
-	//	}
+		outfile.close();
+	}
 
-	//}
 
 }
